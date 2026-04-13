@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lake Powell Boat Runner</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #87ceeb;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: system-ui, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a2a3a; }
+    }
+    #game-wrap { display: flex; flex-direction: column; align-items: center; padding: 1.5rem 0; }
+    #score-row { display: flex; gap: 2rem; margin-bottom: 0.75rem; font-size: 14px; color: #555; }
+    #score-row span { font-weight: 600; color: #222; }
+    @media (prefers-color-scheme: dark) {
+      #score-row { color: #aaa; }
+      #score-row span { color: #eee; }
+    }
+    #canvas { border-radius: 12px; border: 1px solid rgba(0,0,0,0.15); display: block; max-width: 100%; }
+    #msg { margin-top: 0.75rem; font-size: 14px; color: #666; min-height: 20px; }
+    #jump-btn {
+      margin-top: 1rem; padding: 8px 28px;
+      border: 1px solid #aaa; border-radius: 8px;
+      background: transparent; font-size: 14px; cursor: pointer;
+    }
+    #jump-btn:hover { background: rgba(0,0,0,0.07); }
+  </style>
+</head>
+<body>
+<div id="game-wrap">
+  <div id="score-row">Score: <span id="score-val">00000</span> &nbsp;&nbsp; Best: <span id="best-val">00000</span> &nbsp;&nbsp; Level: <span id="level-val">1</span></div>
+  <canvas id="canvas" width="680" height="200"></canvas>
+  <div id="msg">Press Space / Tap to start</div>
+  <button id="jump-btn">Jump (Space)</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score-val');
+const bestEl = document.getElementById('best-val');
+const levelEl = document.getElementById('level-val');
+const msgEl = document.getElementById('msg');
+
+const W = canvas.width, H = canvas.height;
+const GROUND_Y = H - 40;
+const BOAT_X = 80;
+
+let state = 'idle';
+let score = 0, best = 0, frame = 0;
+let boatY, velY, isJumping, obstacles, clouds, waves, speed, spawnTimer, spawnInterval;
+let particles = [];
+
+function isDark() {
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function palette() {
+  return isDark() ? {
+    sky: '#1a2a3a', water1: '#0d3b5e', water2: '#0a2a45',
+    cliff: '#6b4f3a', cliffDark: '#4a3428', sand: '#c8a96e',
+    boatBody: '#e8d5a0', boatHull: '#c8722a', boatAccent: '#e85c2a',
+    wake: 'rgba(120,200,255,0.35)', rock: '#8a7060', rockDark: '#5a4838',
+    buoy: '#e84040', buoyTop: '#fff',
+    foam: 'rgba(180,230,255,0.4)', cloud: 'rgba(180,200,220,0.18)',
+    sun: '#f5c842', text: '#e8f4ff', shadow: 'rgba(0,0,0,0.4)'
+  } : {
+    sky: '#87ceeb', water1: '#1e8ac4', water2: '#1670a0',
+    cliff: '#c48a5a', cliffDark: '#8a5a38', sand: '#e8c87a',
+    boatBody: '#f5e8b0', boatHull: '#d45a1a', boatAccent: '#ff6a2a',
+    wake: 'rgba(255,255,255,0.55)', rock: '#a08070', rockDark: '#705040',
+    buoy: '#ff3333', buoyTop: '#ffffff',
+    foam: 'rgba(255,255,255,0.6)', cloud: 'rgba(255,255,255,0.85)',
+    sun: '#f5c842', text: '#1a3a5a', shadow: 'rgba(0,0,0,0.15)'
+  };
+}
+
+function initGame() {
+  boatY = GROUND_Y - 28;
+  velY = 0;
+  isJumping = false;
+  obstacles = [];
+  clouds = [{x:200,y:30,w:70},{x:450,y:50,w:90},{x:620,y:25,w:60}];
+  waves = Array.from({length:12},(_,i)=>({x:i*62,phase:i*0.5}));
+  score = 0; frame = 0; speed = 5; spawnTimer = 0; spawnInterval = 90;
+  particles = [];
+}
+
+function jump() {
+  if (state === 'idle' || state === 'dead') { initGame(); state = 'running'; msgEl.textContent = ''; return; }
+  if (state === 'running' && !isJumping) {
+    velY = -13;
+    isJumping = true;
+    for(let i=0;i<6;i++) particles.push({x:BOAT_X,y:GROUND_Y,vx:-1.5+Math.random()*-2,vy:-2-Math.random()*2,life:1,col:'rgba(120,200,255,0.7)'});
+  }
+}
+
+document.addEventListener('keydown', e => { if(e.code==='Space'){e.preventDefault();jump();} });
+document.getElementById('jump-btn').addEventListener('click', jump);
+canvas.addEventListener('click', jump);
+
+function spawnObstacle() {
+  const type = Math.random() < 0.45 ? 'rock' : (Math.random() < 0.5 ? 'buoy' : 'log');
+  let h, w;
+  if(type==='rock'){h=18+Math.floor(Math.random()*20);w=20+Math.floor(Math.random()*16);}
+  else if(type==='buoy'){h=28;w=14;}
+  else{h=14;w=38;}
+  obstacles.push({type,x:W+20,y:GROUND_Y-h+4,w,h});
+}
+
+function drawSky(p) {
+  let grad = ctx.createLinearGradient(0,0,0,GROUND_Y-20);
+  grad.addColorStop(0, p.sky);
+  grad.addColorStop(1, isDark()?'#0d2030':p.water1);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,W,GROUND_Y-20);
+}
+
+function drawSun(p) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(W-60,36,18,0,Math.PI*2);
+  ctx.fillStyle = p.sun;
+  ctx.globalAlpha = 0.8;
+  ctx.fill();
+  ctx.globalAlpha = 0.18;
+  ctx.arc(W-60,36,26,0,Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCliffs(p) {
+  ctx.fillStyle = p.cliffDark;
+  ctx.beginPath();
+  ctx.moveTo(0,GROUND_Y-20);
+  ctx.lineTo(0,60); ctx.lineTo(30,45); ctx.lineTo(60,70);
+  ctx.lineTo(90,52); ctx.lineTo(130,80); ctx.lineTo(170,60);
+  ctx.lineTo(200,75); ctx.lineTo(200,GROUND_Y-20);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = p.cliff;
+  ctx.beginPath();
+  ctx.moveTo(0,GROUND_Y-20);
+  ctx.lineTo(0,65); ctx.lineTo(28,50); ctx.lineTo(58,72);
+  ctx.lineTo(88,55); ctx.lineTo(128,82); ctx.lineTo(168,65);
+  ctx.lineTo(195,78); ctx.lineTo(195,GROUND_Y-20);
+  ctx.closePath(); ctx.fill();
+}
+
+function drawWater(p) {
+  ctx.fillStyle = p.water1;
+  ctx.fillRect(0, GROUND_Y-20, W, 20);
+  ctx.fillStyle = p.water2;
+  ctx.fillRect(0, GROUND_Y, W, H-GROUND_Y);
+  waves.forEach(w => {
+    w.x -= speed * 0.4;
+    if(w.x < -60) w.x = W + 20;
+    ctx.save();
+    ctx.strokeStyle = p.foam;
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(w.x, GROUND_Y - 10 + Math.sin(frame*0.06+w.phase)*3);
+    ctx.bezierCurveTo(w.x+15,GROUND_Y-16+Math.sin(frame*0.06+w.phase)*2,w.x+30,GROUND_Y-8,w.x+40,GROUND_Y-12+Math.sin(frame*0.06+w.phase+1)*3);
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+function drawClouds(p) {
+  clouds.forEach(c => {
+    c.x -= speed * 0.12;
+    if(c.x < -100) c.x = W + 60;
+    ctx.save();
+    ctx.fillStyle = p.cloud;
+    ctx.beginPath();
+    ctx.ellipse(c.x, c.y, c.w/2, 16, 0, 0, Math.PI*2);
+    ctx.ellipse(c.x+18, c.y-10, c.w/3, 13, 0, 0, Math.PI*2);
+    ctx.ellipse(c.x-18, c.y-4, c.w/3.5, 10, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+function drawBoat(p) {
+  const bx = BOAT_X, by = boatY;
+  ctx.save();
+  ctx.fillStyle = p.shadow;
+  ctx.beginPath();
+  ctx.ellipse(bx, GROUND_Y+2, 22, 4, 0, 0, Math.PI*2);
+  ctx.fill();
+  const wobble = isJumping ? 0 : Math.sin(frame*0.18)*1.2;
+  ctx.translate(bx, by+wobble);
+
+  ctx.fillStyle = p.boatHull;
+  ctx.beginPath();
+  ctx.moveTo(-24,8); ctx.lineTo(24,8);
+  ctx.lineTo(20,18); ctx.lineTo(-20,18);
+  ctx.closePath(); ctx.fill();
+
+  ctx.fillStyle = p.boatBody;
+  ctx.beginPath();
+  ctx.moveTo(-20,0); ctx.lineTo(22,0);
+  ctx.lineTo(24,8); ctx.lineTo(-24,8);
+  ctx.closePath(); ctx.fill();
+
+  ctx.fillStyle = p.boatAccent;
+  ctx.fillRect(-20, 4, 44, 3);
+
+  ctx.fillStyle = '#fff';
+  ctx.globalAlpha = 0.92;
+  ctx.fillRect(-8, -14, 16, 14);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#2a6ea6';
+  ctx.fillRect(-6, -12, 12, 10);
+
+  ctx.fillStyle = '#c8a020';
+  ctx.fillRect(-1, -20, 2, 24);
+
+  ctx.fillStyle = '#e82020';
+  ctx.beginPath();
+  ctx.moveTo(1, -20); ctx.lineTo(12, -15); ctx.lineTo(1,-10);
+  ctx.closePath(); ctx.fill();
+
+  ctx.fillStyle = p.wake;
+  ctx.beginPath();
+  ctx.moveTo(-20, 12);
+  for(let i=0;i<4;i++) {
+    ctx.lineTo(-24-i*12, 16+i*2);
+    ctx.lineTo(-28-i*12, 12+i*1.5);
+  }
+  ctx.lineTo(-20, 14);
+  ctx.closePath(); ctx.fill();
+
+  ctx.restore();
+}
+
+function drawObstacle(o, p) {
+  ctx.save();
+  if(o.type==='rock') {
+    ctx.fillStyle = p.rockDark;
+    ctx.beginPath();
+    ctx.ellipse(o.x+o.w/2+2, o.y+o.h-2, o.w/2, o.h/2.5, 0.1, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = p.rock;
+    ctx.beginPath();
+    ctx.moveTo(o.x+4, o.y+o.h);
+    ctx.lineTo(o.x, o.y+o.h*0.7);
+    ctx.lineTo(o.x+o.w*0.3, o.y);
+    ctx.lineTo(o.x+o.w*0.7, o.y+o.h*0.15);
+    ctx.lineTo(o.x+o.w, o.y+o.h*0.5);
+    ctx.lineTo(o.x+o.w-2, o.y+o.h);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = isDark()?'rgba(255,255,255,0.06)':'rgba(255,255,255,0.22)';
+    ctx.beginPath();
+    ctx.moveTo(o.x+o.w*0.3, o.y+2);
+    ctx.lineTo(o.x+o.w*0.5, o.y+o.h*0.35);
+    ctx.lineTo(o.x+o.w*0.2, o.y+o.h*0.4);
+    ctx.closePath(); ctx.fill();
+  } else if(o.type==='buoy') {
+    ctx.fillStyle = isDark()?'rgba(0,0,0,0.3)':'rgba(0,0,0,0.1)';
+    ctx.beginPath();
+    ctx.ellipse(o.x+o.w/2+2, o.y+o.h+1, 6, 3, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(o.x+o.w/2, o.y+o.h-2);
+    ctx.lineTo(o.x+o.w/2, GROUND_Y+2);
+    ctx.stroke();
+    ctx.fillStyle = p.buoy;
+    ctx.beginPath();
+    ctx.arc(o.x+o.w/2, o.y+o.h/2, o.w/2, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = p.buoyTop;
+    ctx.fillRect(o.x+3, o.y, o.w-6, 8);
+    ctx.fillStyle = p.buoy;
+    ctx.beginPath();
+    ctx.arc(o.x+o.w/2, o.y+4, o.w/2-4, 0, Math.PI*2);
+    ctx.fill();
+  } else {
+    ctx.fillStyle = '#7a5a30';
+    ctx.beginPath();
+    ctx.roundRect(o.x, o.y+2, o.w, o.h-2, 5);
+    ctx.fill();
+    ctx.fillStyle = '#5a4020';
+    for(let i=0;i<3;i++) { ctx.fillRect(o.x+6+i*10, o.y+2, 3, o.h-2); }
+    ctx.fillStyle = '#9a7a50';
+    ctx.fillRect(o.x, o.y+2, o.w, 3);
+  }
+  ctx.restore();
+}
+
+function drawParticles() {
+  particles.forEach(pt => {
+    ctx.save();
+    ctx.globalAlpha = pt.life * 0.8;
+    ctx.fillStyle = pt.col;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, 4*pt.life, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+    pt.x += pt.vx; pt.y += pt.vy; pt.vy += 0.2; pt.life -= 0.05;
+  });
+  particles = particles.filter(pt => pt.life > 0);
+}
+
+function drawDeadScreen(p) {
+  ctx.save();
+  ctx.fillStyle = isDark()?'rgba(0,0,0,0.55)':'rgba(0,0,0,0.28)';
+  ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = p.text;
+  ctx.font = '600 22px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Game Over!', W/2, H/2-18);
+  ctx.font = '14px system-ui, sans-serif';
+  ctx.globalAlpha = 0.7;
+  ctx.fillText('Score: ' + score + '  |  Best: ' + best, W/2, H/2+10);
+  ctx.fillText('Space / Tap to play again', W/2, H/2+34);
+  ctx.restore();
+}
+
+function loop() {
+  const p = palette();
+  ctx.clearRect(0,0,W,H);
+  drawSky(p); drawSun(p); drawCliffs(p); drawClouds(p); drawWater(p);
+
+  if(state === 'running') {
+    frame++;
+    score = Math.floor(frame / 6);
+    scoreEl.textContent = String(score).padStart(5,'0');
+    const level = Math.floor(score / 200) + 1;
+    levelEl.textContent = level;
+    speed = 5 + level * 0.9;
+    spawnInterval = Math.max(42, 90 - level * 7);
+
+    boatY += velY;
+    velY += 0.72;
+    if(boatY >= GROUND_Y - 28) { boatY = GROUND_Y - 28; velY = 0; isJumping = false; }
+
+    spawnTimer++;
+    if(spawnTimer >= spawnInterval) { spawnObstacle(); spawnTimer = 0; }
+    obstacles.forEach(o => o.x -= speed);
+    obstacles = obstacles.filter(o => o.x > -60);
+
+    for(let o of obstacles) {
+      const margin = 8;
+      if(BOAT_X+18-margin > o.x+margin && BOAT_X-18+margin < o.x+o.w-margin && boatY+10 > o.y+margin && boatY < o.y+o.h-margin) {
+        state = 'dead';
+        if(score > best) { best = score; bestEl.textContent = String(best).padStart(5,'0'); }
+        for(let i=0;i<16;i++) particles.push({x:BOAT_X,y:boatY,vx:-4+Math.random()*8,vy:-6-Math.random()*4,life:1,col:`hsl(${Math.random()*40+10},80%,60%)`});
+        msgEl.textContent = '';
+        break;
+      }
+    }
+  }
+
+  obstacles.forEach(o => drawObstacle(o, p));
+  drawBoat(p);
+  drawParticles();
+
+  ctx.save();
+  ctx.fillStyle = isDark()?'rgba(255,255,255,0.07)':'rgba(0,0,0,0.06)';
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(String(score).padStart(5,'0'), W-20, 36);
+  ctx.fillStyle = p.text;
+  ctx.globalAlpha = 0.45;
+  ctx.fillText(String(score).padStart(5,'0'), W-22, 34);
+  ctx.restore();
+
+  if(state === 'dead') drawDeadScreen(p);
+  if(state === 'idle') {
+    ctx.save();
+    ctx.fillStyle = palette().text;
+    ctx.font = '500 16px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.globalAlpha = 0.7;
+    ctx.fillText('Press Space or Tap to start', W/2, H/2);
+    ctx.restore();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+initGame();
+loop();
+</script>
+</body>
+</html>
